@@ -150,9 +150,15 @@ impl<'a> CodeGen<'a> {
     fn out(&mut self) {
         let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
         let val = self.builder.build_load(v.into_pointer_value(), "load_val").unwrap();
-        let ext = self.builder.build_int_s_extend(val.into_int_value(), self.ctx.i32_type(), "ext").unwrap();
         let putchar = self.module.get_function("putchar").unwrap();
-        let _call = self.builder.build_call(putchar, &[ext.into()], "out").unwrap();
+        let _call = self.builder.build_call(putchar, &[val.into()], "out").unwrap();
+    }
+
+    fn input(&mut self) {
+        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
+        let putchar = self.module.get_function("getchar").unwrap();
+        let call = self.builder.build_call(putchar, &[], "in").unwrap().try_as_basic_value().left().unwrap();
+        let _ = self.builder.build_store(v.into_pointer_value(), call);
     }
 
     fn loop_start(&mut self) {
@@ -186,6 +192,7 @@ impl<'a> CodeGen<'a> {
         let i8_ptr = i8_type.ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
         let _putchar = module.add_function("putchar", i8_type.fn_type(&[i32_type.into()], false), None);
+        let _getchar = module.add_function("getchar", i8_type.fn_type(&[], false), None);
         let calloc = module.add_function("calloc", i8_ptr.fn_type(&[i64_type.into(), i64_type.into()], false), None);
         let fn_type = i8_type.fn_type(&[], false);
         let func = module.add_function("main", fn_type, None);
@@ -226,13 +233,15 @@ impl<'a> CodeGen<'a> {
                 Op::Output => {
                     self.out();
                 }
+                Op::Input => {
+                    self.input();
+                }
                 Op::LLoop => {
                     self.loop_start();
                 }
                 Op::RLoop => {
                     self.loop_end();
                 }
-                _ => unimplemented!()
             }
         }
         let _ret = self.builder.build_return(Some(&self.ctx.i8_type().const_int(0, false)));

@@ -1,17 +1,18 @@
 use std::collections::VecDeque;
-use std::{default, fs};
 use std::path::Path;
 use std::process::Command;
+use std::{default, fs};
 
 use inkwell::basic_block::BasicBlock;
-use inkwell::{AddressSpace, OptimizationLevel};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::targets::{Target, InitializationConfig, TargetMachine, RelocMode, CodeModel, FileType};
-use inkwell::types::{VoidType, FunctionType};
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+};
+use inkwell::types::{FunctionType, VoidType};
 use inkwell::values::{BasicValueEnum, PointerValue};
-
+use inkwell::{AddressSpace, OptimizationLevel};
 
 #[derive(Clone, Debug)]
 enum Op {
@@ -25,17 +26,16 @@ enum Op {
     RLoop,
 }
 
-
 struct Lexer {
     buffer: Vec<char>,
-    ptr: usize
+    ptr: usize,
 }
 
 impl Lexer {
     fn new(source: Vec<char>) -> Self {
         Self {
             buffer: source,
-            ptr: 0
+            ptr: 0,
         }
     }
 
@@ -64,10 +64,9 @@ impl Lexer {
             '<' => Op::PointerDec(count),
             '+' => Op::ValueInc(count),
             '-' => Op::ValueDec(count),
-            t => unreachable!("Illegal character {}", t)
+            t => unreachable!("Illegal character {}", t),
         }
     }
-
 
     fn run(&mut self) -> Vec<Op> {
         let mut vec = Vec::new();
@@ -81,7 +80,7 @@ impl Lexer {
                 '>' | '<' | '+' | '-' => {
                     let op = self.eat_while_same(&c);
                     vec.push(op);
-                },
+                }
                 '.' => {
                     self.eat().unwrap();
                     vec.push(Op::Output);
@@ -101,7 +100,7 @@ impl Lexer {
                 '\n' | '\r' | ' ' | '\t' => {
                     self.eat().unwrap();
                 }
-                _ => unimplemented!()
+                _ => unimplemented!(),
             }
         }
         vec
@@ -118,46 +117,82 @@ struct CodeGen<'a> {
 }
 
 impl<'a> CodeGen<'a> {
-
     fn ptr_manipulate(&mut self, count: usize, dec: bool) {
-        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
+        let v = self
+            .builder
+            .build_load(self.ptr.into(), "load_ptr")
+            .unwrap();
         let mut int_val = self.ctx.i64_type().const_int(count as u64, false);
         if dec {
             int_val = int_val.const_neg();
         }
         let ptr = unsafe {
-            let inc = self.builder.build_gep(v.into_pointer_value(), &[int_val.into()], "gep");
+            let inc = self
+                .builder
+                .build_gep(v.into_pointer_value(), &[int_val.into()], "gep");
             inc.unwrap()
         };
         let _ = self.builder.build_store(self.ptr, ptr);
     }
 
     fn val_manipulate(&mut self, count: usize, dec: bool) {
-        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
-        let val = self.builder.build_load(v.into_pointer_value(), "load_val").unwrap();
+        let v = self
+            .builder
+            .build_load(self.ptr.into(), "load_ptr")
+            .unwrap();
+        let val = self
+            .builder
+            .build_load(v.into_pointer_value(), "load_val")
+            .unwrap();
         let int_val = self.ctx.i64_type().const_int(count as u64, false);
         let new_val = if !dec {
-            let val = self.builder.build_int_add( val.into_int_value(), int_val, "add").unwrap();
+            let val = self
+                .builder
+                .build_int_add(val.into_int_value(), int_val, "add")
+                .unwrap();
             val
         } else {
-
-            let val = self.builder.build_int_sub(val.into_int_value(), int_val, "sub").unwrap();
+            let val = self
+                .builder
+                .build_int_sub(val.into_int_value(), int_val, "sub")
+                .unwrap();
             val
         };
-        let _ = self.builder.build_store(v.into_pointer_value(), new_val).unwrap();
+        let _ = self
+            .builder
+            .build_store(v.into_pointer_value(), new_val)
+            .unwrap();
     }
 
     fn out(&mut self) {
-        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
-        let val = self.builder.build_load(v.into_pointer_value(), "load_val").unwrap();
+        let v = self
+            .builder
+            .build_load(self.ptr.into(), "load_ptr")
+            .unwrap();
+        let val = self
+            .builder
+            .build_load(v.into_pointer_value(), "load_val")
+            .unwrap();
         let putchar = self.module.get_function("putchar").unwrap();
-        let _call = self.builder.build_call(putchar, &[val.into()], "out").unwrap();
+        let _call = self
+            .builder
+            .build_call(putchar, &[val.into()], "out")
+            .unwrap();
     }
 
     fn input(&mut self) {
-        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
+        let v = self
+            .builder
+            .build_load(self.ptr.into(), "load_ptr")
+            .unwrap();
         let putchar = self.module.get_function("getchar").unwrap();
-        let call = self.builder.build_call(putchar, &[], "in").unwrap().try_as_basic_value().left().unwrap();
+        let call = self
+            .builder
+            .build_call(putchar, &[], "in")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap();
         let _ = self.builder.build_store(v.into_pointer_value(), call);
     }
 
@@ -170,11 +205,25 @@ impl<'a> CodeGen<'a> {
         self.loops.push_back((cond_block, end_block));
         self.builder.build_unconditional_branch(cond_block);
         self.builder.position_at_end(cond_block);
-        let v = self.builder.build_load(self.ptr.into(), "load_ptr").unwrap();
-        let val = self.builder.build_load(v.into_pointer_value(), "load_val").unwrap();
-        let comp = self.builder.build_int_compare(inkwell::IntPredicate::NE, val.into_int_value(), self.ctx.i8_type().const_zero(), "ne_zero")
-.unwrap();
-        self.builder.build_conditional_branch(comp, body_block, end_block);
+        let v = self
+            .builder
+            .build_load(self.ptr.into(), "load_ptr")
+            .unwrap();
+        let val = self
+            .builder
+            .build_load(v.into_pointer_value(), "load_val")
+            .unwrap();
+        let comp = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                val.into_int_value(),
+                self.ctx.i8_type().const_zero(),
+                "ne_zero",
+            )
+            .unwrap();
+        self.builder
+            .build_conditional_branch(comp, body_block, end_block);
         self.builder.position_at_end(body_block);
     }
 
@@ -191,9 +240,14 @@ impl<'a> CodeGen<'a> {
         let i32_type = ctx.i32_type();
         let i8_ptr = i8_type.ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
-        let _putchar = module.add_function("putchar", i8_type.fn_type(&[i32_type.into()], false), None);
+        let _putchar =
+            module.add_function("putchar", i8_type.fn_type(&[i32_type.into()], false), None);
         let _getchar = module.add_function("getchar", i8_type.fn_type(&[], false), None);
-        let calloc = module.add_function("calloc", i8_ptr.fn_type(&[i64_type.into(), i64_type.into()], false), None);
+        let calloc = module.add_function(
+            "calloc",
+            i8_ptr.fn_type(&[i64_type.into(), i64_type.into()], false),
+            None,
+        );
         let fn_type = i8_type.fn_type(&[], false);
         let func = module.add_function("main", fn_type, None);
         let block = ctx.append_basic_block(func, "entry");
@@ -201,9 +255,15 @@ impl<'a> CodeGen<'a> {
 
         let ptr_val = builder.build_alloca(i8_ptr, "ptr").unwrap();
 
-
-        let args = (i64_type.const_int(1000, false), i64_type.const_int(1, false)); 
-        let calloc_block = builder.build_call(calloc, &[args.0.into(), args.1.into()], "block").unwrap().try_as_basic_value().left();
+        let args = (
+            i64_type.const_int(1000, false),
+            i64_type.const_int(1, false),
+        );
+        let calloc_block = builder
+            .build_call(calloc, &[args.0.into(), args.1.into()], "block")
+            .unwrap()
+            .try_as_basic_value()
+            .left();
         let _i = builder.build_store(ptr_val, calloc_block.unwrap()).unwrap();
         Self {
             ctx: &ctx,
@@ -211,7 +271,7 @@ impl<'a> CodeGen<'a> {
             ptr: ptr_val,
             module,
             loops: VecDeque::new(),
-            ast
+            ast,
         }
     }
 
@@ -244,7 +304,9 @@ impl<'a> CodeGen<'a> {
                 }
             }
         }
-        let _ret = self.builder.build_return(Some(&self.ctx.i8_type().const_int(0, false)));
+        let _ret = self
+            .builder
+            .build_return(Some(&self.ctx.i8_type().const_int(0, false)));
     }
 
     pub fn generate_machine_code(&self, path: &str) {
@@ -270,11 +332,14 @@ impl<'a> CodeGen<'a> {
             .unwrap();
 
         let mut command = Command::new("link");
-        command.arg(path).arg("/entry:main").arg("/out:main.exe").arg("ucrt.lib");
+        command
+            .arg(path)
+            .arg("/entry:main")
+            .arg("/out:main.exe")
+            .arg("ucrt.lib");
         let r = command.output().unwrap();
     }
 }
-
 
 fn main() {
     let path = std::env::args().nth(1).unwrap();

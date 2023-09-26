@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::process::Command;
 use std::{default, fs};
@@ -11,11 +11,12 @@ use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 use inkwell::types::{FunctionType, VoidType};
-use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, OptimizationLevel};
 
 #[derive(Clone, Debug)]
 enum Op {
+    // BF
     PointerInc(usize),
     PointerDec(usize),
     ValueInc(usize),
@@ -24,6 +25,8 @@ enum Op {
     Input,
     LLoop,
     RLoop,
+    // BF++
+    Proc(char),
 }
 
 struct Lexer {
@@ -68,39 +71,51 @@ impl Lexer {
         }
     }
 
+    fn get_op(&mut self) -> Option<Op> {
+        let c = if let Some(c) = self.peek() {
+            c.clone()
+        } else {
+            return None;
+        };
+        match c {
+            '>' | '<' | '+' | '-' => Some(self.eat_while_same(&c)),
+            '.' => {
+                self.eat();
+                Some(Op::Output)
+            }
+            ',' => {
+                self.eat();
+                Some(Op::Input)
+            }
+            '[' => {
+                self.eat();
+                Some(Op::LLoop)
+            }
+            ']' => {
+                self.eat();
+                Some(Op::RLoop)
+            }
+            '\n' | '\r' | ' ' | '\t' => {
+                self.eat().unwrap();
+                self.get_op()
+            }
+            ch => {
+                if !ch.is_alphanumeric() {
+                    self.eat();
+                    return Some(Op::Proc(ch));
+                }
+                panic!("Illegal character! {}", ch);
+            }
+        }
+    }
+
     fn run(&mut self) -> Vec<Op> {
         let mut vec = Vec::new();
         loop {
-            let c = if let Some(c) = self.peek() {
-                c.clone()
+            if let Some(op) = self.get_op() {
+                vec.push(op);
             } else {
                 break;
-            };
-            match c {
-                '>' | '<' | '+' | '-' => {
-                    let op = self.eat_while_same(&c);
-                    vec.push(op);
-                }
-                '.' => {
-                    self.eat().unwrap();
-                    vec.push(Op::Output);
-                }
-                ',' => {
-                    self.eat().unwrap();
-                    vec.push(Op::Input);
-                }
-                '[' => {
-                    self.eat().unwrap();
-                    vec.push(Op::LLoop);
-                }
-                ']' => {
-                    self.eat().unwrap();
-                    vec.push(Op::RLoop);
-                }
-                '\n' | '\r' | ' ' | '\t' => {
-                    self.eat().unwrap();
-                }
-                _ => unimplemented!(),
             }
         }
         vec
@@ -110,17 +125,18 @@ impl Lexer {
 struct CodeGen<'a> {
     ctx: &'a Context,
     builder: Builder<'a>,
-    ptr: PointerValue<'a>,
+    ptr: VecDeque<PointerValue<'a>>,
     module: Module<'a>,
     loops: VecDeque<(BasicBlock<'a>, BasicBlock<'a>)>,
     ast: Vec<Op>,
+    procs: HashMap<char, Option<FunctionValue<'a>>>,
 }
 
 impl<'a> CodeGen<'a> {
     fn ptr_manipulate(&mut self, count: usize, dec: bool) {
         let v = self
             .builder
-            .build_load(self.ptr.into(), "load_ptr")
+            .build_load(*self.ptr.back().unwrap(), "load_ptr")
             .unwrap();
         let mut int_val = self.ctx.i64_type().const_int(count as u64, false);
         if dec {
@@ -132,13 +148,13 @@ impl<'a> CodeGen<'a> {
                 .build_gep(v.into_pointer_value(), &[int_val.into()], "gep");
             inc.unwrap()
         };
-        let _ = self.builder.build_store(self.ptr, ptr);
+        let _ = self.builder.build_store(*self.ptr.back().unwrap(), ptr);
     }
 
     fn val_manipulate(&mut self, count: usize, dec: bool) {
         let v = self
             .builder
-            .build_load(self.ptr.into(), "load_ptr")
+            .build_load(*self.ptr.back().unwrap(), "load_ptr")
             .unwrap();
         let val = self
             .builder
@@ -167,7 +183,7 @@ impl<'a> CodeGen<'a> {
     fn out(&mut self) {
         let v = self
             .builder
-            .build_load(self.ptr.into(), "load_ptr")
+            .build_load(*self.ptr.back().unwrap(), "load_ptr")
             .unwrap();
         let val = self
             .builder
@@ -183,7 +199,7 @@ impl<'a> CodeGen<'a> {
     fn input(&mut self) {
         let v = self
             .builder
-            .build_load(self.ptr.into(), "load_ptr")
+            .build_load(*self.ptr.back().unwrap(), "load_ptr")
             .unwrap();
         let putchar = self.module.get_function("getchar").unwrap();
         let call = self
@@ -207,7 +223,7 @@ impl<'a> CodeGen<'a> {
         self.builder.position_at_end(cond_block);
         let v = self
             .builder
-            .build_load(self.ptr.into(), "load_ptr")
+            .build_load(*self.ptr.back().unwrap(), "load_ptr")
             .unwrap();
         let val = self
             .builder
@@ -231,6 +247,44 @@ impl<'a> CodeGen<'a> {
         let (cond_block, end_block) = self.loops.pop_back().unwrap();
         self.builder.build_unconditional_branch(cond_block);
         self.builder.position_at_end(end_block);
+    }
+
+    fn proc(&mut self, ident: char) {
+        match self.procs.get(&ident) {
+            None => {
+                let i8_ptr = self.ctx.i8_type().ptr_type(AddressSpace::default());
+                let f = self.module.add_function(
+                    &ident.to_string(),
+                    self.ctx.void_type().fn_type(&[i8_ptr.into()], false),
+                    None,
+                );
+                let ptr= f.get_first_param().unwrap();
+                
+                let entry = self.ctx.append_basic_block(f, "entry");
+                self.builder.position_at_end(entry);
+                let ptr_val = self.builder.build_alloca(i8_ptr, "ptr").unwrap();
+                self.builder.build_store(ptr_val, ptr).unwrap();
+                self.ptr.push_back(ptr_val);
+
+                self.procs.insert(ident, None);
+            }
+            Some(None) => {
+                self.builder.build_return(None).unwrap();
+                self.ptr.pop_back().unwrap();
+                let main = self.module.get_function("main").unwrap();
+                let last_block = *main.get_basic_blocks().last().unwrap();
+                let f = self.module.get_function(&ident.to_string()).unwrap();
+                self.builder.position_at_end(last_block);
+                self.procs.insert(ident, Some(f));
+            }
+            Some(Some(f)) => {
+                let ptr = self.builder.build_load(*self.ptr.back().unwrap(), "load_ptr").unwrap();
+                self.builder.build_call(
+                    *f, &[inkwell::values::BasicMetadataValueEnum::PointerValue(ptr.into_pointer_value())],
+                    &ident.to_string(),
+                ).unwrap();
+            }
+        }
     }
 
     fn new(ctx: &'a Context, ast: Vec<Op>) -> Self {
@@ -268,10 +322,11 @@ impl<'a> CodeGen<'a> {
         Self {
             ctx: &ctx,
             builder,
-            ptr: ptr_val,
+            ptr: VecDeque::from([ptr_val]),
             module,
             loops: VecDeque::new(),
             ast,
+            procs: HashMap::new(),
         }
     }
 
@@ -301,6 +356,9 @@ impl<'a> CodeGen<'a> {
                 }
                 Op::RLoop => {
                     self.loop_end();
+                }
+                Op::Proc(ident) => {
+                    self.proc(ident);
                 }
             }
         }

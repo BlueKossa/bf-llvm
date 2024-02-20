@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  # Triggers the workflow on push or pull request events but only for the master branch
+  push:
+  pull_request:
+    branches: [ master ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  
+env:
+  IMAGE_NAME: rust-llvm
+
+jobs:
+  test-windows:
+    name: Test Windows
+    runs-on: windows-2022
+    env:
+      toolchain-version: 1.67.0
+      llvm-version: 14.0.6
+    steps:
+
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.toolchain-version }}
+
+      - name: Install LLVM
+        uses: PLC-lang/install-llvm-action@latest
+        with:
+          version: ${{ env.llvm-version }}
+          directory: "./llvm"
+
+      - name: Release Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      - name: Rename file
+        run: mv target/release/bf.exe ./bf.exe
+        
+      
+      - uses: actions/upload-artifact@master
+        with:
+          name: bf.exe
+          path: bf.exe
